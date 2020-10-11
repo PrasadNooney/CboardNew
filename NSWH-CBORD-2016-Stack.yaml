@@ -1,0 +1,1881 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates a CBORD SQL and WebServer for Dev/Test/Prod
+Parameters:
+  AvailabilityZone:
+    Type: String
+    Description: The AvailabilityZone
+    Default: AsiaPacSouthEast2a
+    AllowedValues:
+      - AsiaPacSouthEast2a
+      - AsiaPacSouthEast2b
+      - AsiaPacSouthEast2c
+  BuildType:
+    Type: String
+    Description: Build Type
+    Default: OnPremMigration
+    AllowedValues:
+      - OnPremMigration
+      - Dev
+      - DryRun
+      - Prod
+  EnableAlerts:
+    Type: String
+    Description: If True CloudWatch Alerting is enabled.
+    Default: "False"
+    AllowedValues:
+    - "True"
+    - "False"
+  Environment:
+    Description: The Environment you wish to build
+    Type: String
+    AllowedValues:
+      - Dev
+      - ProdSide01
+      - ProdSide02
+  LHD:
+    Description: Instance of CBORD you would like to build
+    Type: String
+    AllowedValues:
+      - MSTR
+      - SNSW
+      - SRV
+      - HNE
+      - CC
+      - MNC
+      - NS
+      - SES
+      - IS
+      - WS
+      - NBM
+      - SWS
+      - SYD
+      - RNS
+      - NNSW
+      - TEST
+      - TRAIN
+  WebImageID:
+    Type: 'AWS::EC2::Image::Id'
+    Description: C.S.T Windows SOE AMI ID
+    Default: ami-062fbe2b425bb9170
+  SQLImageID:
+    Type: 'AWS::EC2::Image::Id'
+    Description: A valid AWS SQL AMI
+    Default: ami-03274c668a4d1d9fe
+  KeyPairName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: Select a KeyPair
+  CbordVersion:
+    Description: The version of CBORD you would like to build
+    Type: String
+    AllowedValues:
+      - '19.09.0100.22801'
+      - '12.15.0100'
+  DomainJoinOU:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: A valid SSM Parameter
+    Default: /Windows/DomainJoinOU
+  DomainJoinUser:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: A valid SSM Parameter
+    Default: /Windows/DomainJoinUser
+  DomainJoinPassword:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: A valid SSM Parameter
+    Default: /Windows/DomainJoinPassword
+  CreationDate:
+    Description: Stack Creation Date in following format - DDMMYYYY
+    Type: Number
+    Default: '10082020'
+  Schedule:
+    Default: "CBORD-Prod"
+    Description: Sutdown Schedule that the EC2 instances will follow, if NoSchedule
+      EC2 instances will not be shutdown.
+    Type: String
+    AllowedValues:
+    - "CBORD-Prod"
+    - "NoSchedule"
+
+
+#Order my CF Parameter Interface
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "EC2 Config"
+        Parameters:
+          - BuildType
+          - AvailabilityZone
+          - EnableAlerts
+          - KeyPairName
+          - Environment
+          - LHD
+          - WebImageID
+          - SQLImageID
+          - CbordVersion
+          - Schedule
+          - CreationDate
+
+      -
+        Label:
+          default: "Domain Join Config"
+        Parameters:
+          - DomainJoinOU
+          - DomainJoinUser
+          - DomainJoinPassword
+
+################################################################################
+############################ Conditions ########################################
+Conditions:
+  EnableAlertsIsTrue: !Equals [ !Ref EnableAlerts, "True" ]
+
+################################################################################
+############################ Mappings ##########################################
+Mappings:
+  ProdSide01:
+    InstanceType:
+      WebServer: t2.small
+      DBServer: t2.small
+    Subnets:
+      AsiaPacSouthEast2a: subnet-012e1b9ac2109fd4d
+      AsiaPacSouthEast2b: subnet-06cc953e62bf262c2
+      AsiaPacSouthEast2c: subnet-09e2dc43a4664a482
+    LoadBalancer:
+      ARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:466343186120:loadbalancer/app/CBORD-ALB-Side01/c7921bfd39d989e2'
+      HTTPListenerARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:466343186120:listener/app/CBORD-ALB-Side01/c7921bfd39d989e2/1b15f661df913b6c'
+      HTTPSListenerARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:466343186120:listener/app/CBORD-ALB-Side01/c7921bfd39d989e2/012f0873a3f49035'
+    CrossAccountBuckets:
+      Buckets: nswh-dev-cbord
+    SourceCodeBucket:
+      Bucket: nswh-cbord-sourcecode
+    Route53:
+      HostedZoneName: 'citc.health.nsw.gov.au.'
+      HostedZoneID: Z07666352646WDJN987WJ
+    MSTR:
+      NsiInterfacePort: '30000'
+      FsiInterfacePort: '8950'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP00
+      DBServer: AWWDVCBDP00
+      BackupBucket: nswh-cbord-mstr
+      WebsiteURL: mstrcbord.citc.health.nsw.gov.au
+      DBServerRoute53: mstrcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord0.citc.health.nsw.gov.au
+      ListenerPriority: '1'
+    SNSW:
+      NsiInterfacePort: '30001'
+      FsiInterfacePort: '8951'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP01
+      DBServer: AWWDVCBDP01
+      BackupBucket: nswh-cbord-snsw
+      WebsiteURL: snswcbord.citc.health.nsw.gov.au
+      DBServerRoute53: snswcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord1.citc.health.nsw.gov.au
+      ListenerPriority: '2'
+    SRV:
+      NsiInterfacePort: '30002'
+      FsiInterfacePort: '8952'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP02
+      DBServer: AWWDVCBDP02
+      BackupBucket: nswh-cbord-srv
+      WebsiteURL: srvcbord.citc.health.nsw.gov.au
+      DBServerRoute53: srvcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord2.citc.health.nsw.gov.au
+      ListenerPriority: '3'
+    HNE:
+      NsiInterfacePort: '30003'
+      FsiInterfacePort: '8953'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP03
+      DBServer: AWWDVCBDP03
+      BackupBucket: nswh-cbord-hne
+      WebsiteURL: hnecbord.citc.health.nsw.gov.au
+      DBServerRoute53: hnecborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord3.citc.health.nsw.gov.au
+      ListenerPriority: '4'
+    CC:
+      NsiInterfacePort: '30004'
+      FsiInterfacePort: '8954'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP04
+      DBServer: AWWDVCBDP04
+      BackupBucket: nswh-cbord-cc
+      WebsiteURL: cccbord.citc.health.nsw.gov.au
+      DBServerRoute53: cccborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord4.citc.health.nsw.gov.au
+      ListenerPriority: '5'
+    MNC:
+      NsiInterfacePort: '30005'
+      FsiInterfacePort: '8955'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP05
+      DBServer: AWWDVCBDP05
+      BackupBucket: nswh-cbord-mnc
+      WebsiteURL: mnccbord.citc.health.nsw.gov.au
+      DBServerRoute53: mnccborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord5.citc.health.nsw.gov.au
+      ListenerPriority: '6'
+    NS:
+      NsiInterfacePort: '30006'
+      FsiInterfacePort: '8956'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP06
+      DBServer: AWWDVCBDP06
+      BackupBucket: nswh-cbord-ns
+      WebsiteURL: nscbord.citc.health.nsw.gov.au
+      DBServerRoute53: nscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord6.citc.health.nsw.gov.au
+      ListenerPriority: '7'
+    SES:
+      NsiInterfacePort: '30007'
+      FsiInterfacePort: '8957'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP07
+      DBServer: AWWDVCBDP07
+      BackupBucket: nswh-cbord-ses
+      WebsiteURL: sescbord.citc.health.nsw.gov.au
+      DBServerRoute53: sescborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord7.citc.health.nsw.gov.au
+      ListenerPriority: '8'
+    IS:
+      NsiInterfacePort: '30008'
+      FsiInterfacePort: '8958'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP08
+      DBServer: AWWDVCBDP08
+      BackupBucket: nswh-cbord-is
+      WebsiteURL: iscbord.citc.health.nsw.gov.au
+      DBServerRoute53: iscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord8.citc.health.nsw.gov.au
+      ListenerPriority: '9'
+    WS:
+      NsiInterfacePort: '30009'
+      FsiInterfacePort: '8959'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP09
+      DBServer: AWWDVCBDP09
+      BackupBucket: nswh-cbord-ws
+      WebsiteURL: wscbord.citc.health.nsw.gov.au
+      DBServerRoute53: wscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord9.citc.health.nsw.gov.au
+      ListenerPriority: '10'
+    NBM:
+      NsiInterfacePort: '30010'
+      FsiInterfacePort: '8960'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP10
+      DBServer: AWWDVCBDP10
+      BackupBucket: nswh-cbord-nbm
+      WebsiteURL: nbmcbord.citc.health.nsw.gov.au
+      DBServerRoute53: nbmcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord10.citc.health.nsw.gov.au
+      ListenerPriority: '11'
+    SWS:
+      NsiInterfacePort: '30011'
+      FsiInterfacePort: '8961'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP11
+      DBServer: AWWDVCBDP11
+      BackupBucket: nswh-cbord-sws
+      WebsiteURL: swscbord.citc.health.nsw.gov.au
+      DBServerRoute53: swscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord11.citc.health.nsw.gov.au
+      ListenerPriority: '12'
+    SYD:
+      NsiInterfacePort: '30012'
+      FsiInterfacePort: '8962'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP12
+      DBServer: AWWDVCBDP12
+      BackupBucket: nswh-cbord-syd
+      WebsiteURL: sydcbord.citc.health.nsw.gov.au
+      DBServerRoute53: sydcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord12.citc.health.nsw.gov.au
+      ListenerPriority: '13'
+    RNS:
+      NsiInterfacePort: '30014'
+      FsiInterfacePort: '8964'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP14
+      DBServer: AWWDVCBDP14
+      BackupBucket: nswh-cbord-rns
+      WebsiteURL: rnscbord.citc.health.nsw.gov.au
+      DBServerRoute53: rnscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord14.citc.health.nsw.gov.au
+      ListenerPriority: '14'
+    NNSW:
+      NsiInterfacePort: '30015'
+      FsiInterfacePort: '8965'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP15
+      DBServer: AWWDVCBDP15
+      BackupBucket: nswh-cbord-nnsw
+      WebsiteURL: nnswcbord.citc.health.nsw.gov.au
+      DBServerRoute53: nnswcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord15.citc.health.nsw.gov.au
+      ListenerPriority: '15'
+  ProdSide02:
+    InstanceType:
+      WebServer: t2.small
+      DBServer: t2.small
+    Subnets:
+      AsiaPacSouthEast2a: subnet-012e1b9ac2109fd4d
+      AsiaPacSouthEast2b: subnet-06cc953e62bf262c2
+      AsiaPacSouthEast2c: subnet-09e2dc43a4664a482
+    LoadBalancer:
+      ARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:466343186120:loadbalancer/app/CBORD-ALB-Side02/f3ebcdbc781f69cf'
+      HTTPListenerARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:466343186120:listener/app/CBORD-ALB-Side02/f3ebcdbc781f69cf/cbed711bddfa0626'
+      HTTPSListenerARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:466343186120:listener/app/CBORD-ALB-Side02/f3ebcdbc781f69cf/2476cdf69384ca0c'
+    CrossAccountBuckets:
+      Buckets: nswh-dev-cbord
+    SourceCodeBucket:
+      Bucket: nswh-cbord-sourcecode
+    Route53:
+      HostedZoneName: 'citc.health.nsw.gov.au.'
+      HostedZoneID: Z07666352646WDJN987WJ
+    MSTR:
+      NsiInterfacePort: '30000'
+      FsiInterfacePort: '8950'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP100
+      DBServer: AWWDVCBDP100
+      BackupBucket: nswh-cbord-mstr
+      WebsiteURL: mstrcbord.citc.health.nsw.gov.au
+      DBServerRoute53: mstrcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord0.citc.health.nsw.gov.au
+      ListenerPriority: '16'
+    SNSW:
+      NsiInterfacePort: '30001'
+      FsiInterfacePort: '8951'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP101
+      DBServer: AWWDVCBDP101
+      BackupBucket: nswh-cbord-snsw
+      WebsiteURL: snswcbord.citc.health.nsw.gov.au
+      DBServerRoute53: snswcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord1.citc.health.nsw.gov.au
+      ListenerPriority: '17'
+    SRV:
+      NsiInterfacePort: '30002'
+      FsiInterfacePort: '8952'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP102
+      DBServer: AWWDVCBDP102
+      BackupBucket: nswh-cbord-srv
+      WebsiteURL: srvcbord.citc.health.nsw.gov.au
+      DBServerRoute53: srvcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord2.citc.health.nsw.gov.au
+      ListenerPriority: '18'
+    HNE:
+      NsiInterfacePort: '30003'
+      FsiInterfacePort: '8953'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP103
+      DBServer: AWWDVCBDP103
+      BackupBucket: nswh-cbord-hne
+      WebsiteURL: hnecbord.citc.health.nsw.gov.au
+      DBServerRoute53: hnecborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord3.citc.health.nsw.gov.au
+      ListenerPriority: '19'
+    CC:
+      NsiInterfacePort: '30004'
+      FsiInterfacePort: '8954'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP104
+      DBServer: AWWDVCBDP104
+      BackupBucket: nswh-cbord-cc
+      WebsiteURL: cccbord.citc.health.nsw.gov.au
+      DBServerRoute53: cccborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord4.citc.health.nsw.gov.au
+      ListenerPriority: '20'
+    MNC:
+      NsiInterfacePort: '30005'
+      FsiInterfacePort: '8955'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP105
+      DBServer: AWWDVCBDP105
+      BackupBucket: nswh-cbord-mnc
+      WebsiteURL: mnccbord.citc.health.nsw.gov.au
+      DBServerRoute53: mnccborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord5.citc.health.nsw.gov.au
+      ListenerPriority: '21'
+    NS:
+      NsiInterfacePort: '30006'
+      FsiInterfacePort: '8956'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP106
+      DBServer: AWWDVCBDP106
+      BackupBucket: nswh-cbord-ns
+      WebsiteURL: nscbord.citc.health.nsw.gov.au
+      DBServerRoute53: nscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord6.citc.health.nsw.gov.au
+      ListenerPriority: '22'
+    SES:
+      NsiInterfacePort: '30007'
+      FsiInterfacePort: '8957'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP107
+      DBServer: AWWDVCBDP107
+      BackupBucket: nswh-cbord-ses
+      WebsiteURL: sescbord.citc.health.nsw.gov.au
+      DBServerRoute53: sescborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord7.citc.health.nsw.gov.au
+      ListenerPriority: '23'
+    IS:
+      NsiInterfacePort: '30008'
+      FsiInterfacePort: '8958'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP108
+      DBServer: AWWDVCBDP108
+      BackupBucket: nswh-cbord-is
+      WebsiteURL: iscbord.citc.health.nsw.gov.au
+      DBServerRoute53: iscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord8.citc.health.nsw.gov.au
+      ListenerPriority: '24'
+    WS:
+      NsiInterfacePort: '30009'
+      FsiInterfacePort: '8959'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP109
+      DBServer: AWWDVCBDP109
+      BackupBucket: nswh-cbord-ws
+      WebsiteURL: wscbord.citc.health.nsw.gov.au
+      DBServerRoute53: wscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord9.citc.health.nsw.gov.au
+      ListenerPriority: '25'
+    NBM:
+      NsiInterfacePort: '30010'
+      FsiInterfacePort: '8960'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP110
+      DBServer: AWWDVCBDP110
+      BackupBucket: nswh-cbord-nbm
+      WebsiteURL: nbmcbord.citc.health.nsw.gov.au
+      DBServerRoute53: nbmcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord10.citc.health.nsw.gov.au
+      ListenerPriority: '26'
+    SWS:
+      NsiInterfacePort: '30011'
+      FsiInterfacePort: '8961'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP111
+      DBServer: AWWDVCBDP111
+      BackupBucket: nswh-cbord-sws
+      WebsiteURL: swscbord.citc.health.nsw.gov.au
+      DBServerRoute53: swscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord11.citc.health.nsw.gov.au
+      ListenerPriority: '27'
+    SYD:
+      NsiInterfacePort: '30012'
+      FsiInterfacePort: '8962'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP112
+      DBServer: AWWDVCBDP112
+      BackupBucket: nswh-cbord-syd
+      WebsiteURL: sydcbord.citc.health.nsw.gov.au
+      DBServerRoute53: sydcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord12.citc.health.nsw.gov.au
+      ListenerPriority: '28'
+    RNS:
+      NsiInterfacePort: '30014'
+      FsiInterfacePort: '8964'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP114
+      DBServer: AWWDVCBDP114
+      BackupBucket: nswh-cbord-rns
+      WebsiteURL: rnscbord.citc.health.nsw.gov.au
+      DBServerRoute53: rnscborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord14.citc.health.nsw.gov.au
+      ListenerPriority: '29'
+    NNSW:
+      NsiInterfacePort: '30015'
+      FsiInterfacePort: '8965'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDP115
+      DBServer: AWWDVCBDP115
+      BackupBucket: nswh-cbord-nnsw
+      WebsiteURL: nnswcbord.citc.health.nsw.gov.au
+      DBServerRoute53: nnswcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbord15.citc.health.nsw.gov.au
+      ListenerPriority: '30'
+  Dev:
+    InstanceType:
+      WebServer: t2.small
+      DBServer: t2.small
+    Subnets:
+      AsiaPacSouthEast2a: subnet-0cfb7456df215ee11
+      AsiaPacSouthEast2b: subnet-09c152dca5ce18801
+      AsiaPacSouthEast2c: subnet-0716f54612fa7b277
+    LoadBalancer:
+      ARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:402565231260:loadbalancer/app/NSWH-CBORD-ALB/b3ddf9ee134b2123'
+      HTTPListenerARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:402565231260:listener/app/NSWH-CBORD-ALB/b3ddf9ee134b2123/5347679b18b89e86'
+      HTTPSListenerARN: 'arn:aws:elasticloadbalancing:ap-southeast-2:402565231260:listener/app/NSWH-CBORD-ALB/b3ddf9ee134b2123/54f6ba9611331cef'
+    CrossAccountBuckets:
+      Buckets: nswh-cbord
+    SourceCodeBucket:
+      Bucket: nswh-cbord-sourcecode
+    Route53:
+      HostedZoneName: 'citc.health.nsw.gov.au.'
+      HostedZoneID: Z07666352646WDJN987WJ
+    TEST:
+      NsiInterfacePort: '30021'
+      FsiInterfacePort: '8971'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDN00
+      DBServer: AWWDVCBDN00
+      BackupBucket: nswh-dev-cbord-test
+      WebsiteURL: testcbord.citc.health.nsw.gov.au
+      DBServerRoute53: testcborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: cbordtest.citc.health.nsw.gov.au
+      ListenerPriority: '31'
+    TRAIN:
+      NsiInterfacePort: '30022'
+      FsiInterfacePort: '8972'
+      FsiInterfaceDestination: '10.22.133.123'
+      WebServer: AWWAVCBDN01
+      DBServer: AWWDVCBDN01
+      BackupBucket: nswh-dev-cbord-train
+      WebsiteURL: traincbord.citc.health.nsw.gov.au
+      DBServerRoute53: traincborddb.citc.health.nsw.gov.au
+      LegacyDBServerRoute53: hsscbordt.citc.health.nsw.gov.au
+      ListenerPriority: '32'
+
+
+Resources:
+################################### Web Server #################################
+  CbordWebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !FindInMap [!Ref Environment,InstanceType,WebServer]
+      IamInstanceProfile: !Ref CbordWebServerInstanceProfile
+      ImageId: !Ref WebImageID
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: 'false'
+        DeviceIndex: '0'
+        GroupSet:
+        - !Ref CbordWebServerSG
+        - !ImportValue Provider-SG-Services01
+        - !ImportValue Provider-SG-Services02
+        SubnetId: !FindInMap [!Ref Environment,Subnets,!Ref AvailabilityZone]
+      Monitoring: true
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sda1"
+        Ebs:
+          VolumeType: "gp2"
+          DeleteOnTermination: "true"
+          VolumeSize: "100"
+      Tags:
+      - Key: Name
+        Value: !FindInMap [!Ref Environment,!Ref LHD,WebServer]
+      - Key: CbordVersion
+        Value: !Ref CbordVersion
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: LHD
+        Value: !Ref LHD
+      - Key: Owner/Contact
+        Value: '{{resolve:ssm:/CBORD/Owner:1}}'
+      - Key: Date
+        Value: !Ref 'CreationDate'
+      - Key: CostCode
+        Value: '{{resolve:ssm:/CBORD/CostCode:1}}'
+      - Key: Schedule
+        Value: !Ref Schedule
+      - Key: PatchBaseline
+        Value: scan
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+          $LocalAdmin = (Get-SSMParameterValue -Name "/Windows/LocalAdmin").Parameters.Value
+          $LocalAdminPassword = (Get-SSMParameterValue -Name "/Windows/LocalAdminPassword").Parameters.Value
+          net user $LocalAdmin $LocalAdminPassword /add /y
+          net localgroup administrators $LocalAdmin /add
+          #Disable IPv6
+          netsh interface teredo set state disabled
+          netsh interface ipv6 6to4 set state state=disabled undoonstop=disabled
+          netsh interface ipv6 isatap set state state=disabled
+          cfn-init.exe -v -s ${AWS::StackId} -r CbordWebServer --region ${AWS::Region}
+          </powershell>
+    DependsOn:
+    - CbordSqlServer
+    - CloudWatchLogGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT300M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        config:
+          commands:
+            00-set-time:
+              command: "tzutil /s \"AUS Eastern Standard Time\""
+              waitAfterCompletion: '0'
+            01-copy-sourcecode:
+              command: !Join ['', ['powershell.exe -command Read-S3Object -BucketName ', !FindInMap [!Ref Environment,SourceCodeBucket,Bucket], ' -KeyPrefix ', !Ref CbordVersion , '-Install-Files -Folder C:\NSWH']]
+              waitAfterCompletion: '0'
+            02-copy-utils:
+              command: !Join ['', ['powershell.exe -command Read-S3Object -BucketName ', !FindInMap [!Ref Environment,SourceCodeBucket,Bucket], ' -KeyPrefix utils -Folder C:\NSWH']]
+              waitAfterCompletion: '0'
+            03-Install-AWS-CLI:
+              command: !Join ['', ['powershell.exe -command C:\NSWH\awscli-v2\AWSCLIV2.msi /qn /norestart']]
+              waitAfterCompletion: '0'
+            04-Install-Python:
+              command: !Join ['', ['powershell.exe -command C:\NSWH\python3.8.2\python-3.8.2-amd64.exe /quiet InstallAllUsers=1 PrependPath=1 -Wait']]
+              waitAfterCompletion: '0'
+            05-Install-GIT:
+              command: !Join ['', ['powershell.exe -command C:\NSWH\git2.26.2\Git-2.26.2-64-bit.exe /silent']]
+              waitAfterCompletion: '0'
+            06-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            07-Clone-GIT-Repo:
+              command: !Join ['', ['powershell.exe -file C:\NSWH\Clone-CbordGitRepo.ps1']]
+              waitAfterCompletion: '0'
+            08-rename:
+              command: !Join ['', ["powershell.exe Rename-Computer -NewName ", !FindInMap [!Ref Environment,!Ref LHD,WebServer], " -Restart"]]
+              waitAfterCompletion: forever
+            09-join-domain:
+              command: !Join ['', ['powershell.exe Add-Computer -DomainName nswhealth.net -OUPath \"', !Ref DomainJoinOU,'\" -Credential (New-Object System.Management.Automation.PSCredential (\"', !Ref DomainJoinUser,'\",(ConvertTo-SecureString \"', !Ref DomainJoinPassword,'\" -AsPlainText -Force))) -Restart -Force']]
+              waitAfterCompletion: forever
+            10-eHealth-hive:
+              command: !Join ['', ['powershell.exe New-Item -Path HKLM:\System -Name eHealth']]
+              waitAfterCompletion: '0'
+            11-tattoo-CbordVersion:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name CbordVersion -Value ', !Ref CbordVersion, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            12-tattoo-LHDInstance:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name LHDInstance -Value ', !Ref LHD, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            13-tattoo-Environment:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name Environment -Value ', !Ref Environment, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            14-tattoo-BuildType:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name BuildType -Value ', !Ref BuildType, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            15-tattoo-NsiInterfacePort:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name NsiInterfacePort -Value ', !FindInMap [!Ref Environment,!Ref LHD,NsiInterfacePort], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            16-tattoo-FsiInterfaceDestination:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name FsiInterfaceDestination -Value ', !FindInMap [!Ref Environment,!Ref LHD,FsiInterfaceDestination], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            17-tattoo-FsiInterfacePort:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name FsiInterfacePort -Value ', !FindInMap [!Ref Environment,!Ref LHD,FsiInterfacePort], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            18-tattoo-SourceCodeBucket:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name SourceCodeBucket -Value ', !FindInMap [!Ref Environment,SourceCodeBucket,Bucket], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            19-tattoo-WebServer-Name:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name WebServer -Value ', !FindInMap [!Ref Environment,!Ref LHD,WebServer], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            20-tattoo-DBServer-Name:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name DBServer -Value ', !FindInMap [!Ref Environment,!Ref LHD,DBServer], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            21-Install-CloudWatch-Agent:
+              command: !Join ['', ['powershell.exe -file C:\NSWH\nswh-cbord-source-code-repo\cloudwatch\CloudWatchInstall.ps1']]
+              waitAfterCompletion: '0'
+            22-Install-IIS:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install_IIS.ps1']]
+              waitAfterCompletion: '0'
+            23-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            24-install-sqlservermodule:
+              command: !Join ['', ['powershell.exe -command Expand-Archive -LiteralPath "C:\NSWH\sqlserver.21.1.18221.zip" -DestinationPath "C:\Program` Files\WindowsPowerShell\Modules\sqlserver"']]
+              waitAfterCompletion: '0'
+            25-Install-MicrosoftUtilities:
+              command: !Join ['', ['powershell.exe -file C:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install-MicrosoftUtilities.ps1']]
+              waitAfterCompletion: '0'
+            26-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            27-install-CbordFatClient:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install-CbordFatClient.ps1']]
+              waitAfterCompletion: '0'
+            28-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            29-install-CbordForWebServer:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install-CbordForWebServer.ps1']]
+              waitAfterCompletion: '0'
+            30-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            31-install-NsiInterface:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install-NSIInterface.ps1']]
+              waitAftercompletion: '0'
+            32-install-FsiInterface:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install-FSIInterface.ps1']]
+              waitAftercompletion: '0'
+            33-start-Interfaces:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Start-FSIandNSIInterface.ps1']]
+              waitAftercompletion: '0'
+            34-Config-Firewall-Log-Perms:
+              command: 'cacls c:\NSWH /t /e /g "NT SERVICE\MPSSVC":F'
+              waitAfterCompletion: '0'
+            35-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            36-Store-IP-in-SSM:
+              command: !Join ['', ['powershell.exe -file C:\NSWH\nswh-cbord-source-code-repo\route53\Store-IP-in-SSM.ps1']]
+              waitAftercompletion: '0'
+            37-signal-success:
+              command: !Join ['', ["cfn-signal.exe -e %ERRORLEVEL%  --stack ", !Ref 'AWS::StackName'," --resource CbordWebServer --region ", !Ref 'AWS::Region']]
+
+          files:
+            c:\cfn\cfn-hup.conf:
+              content: !Join ['', ['[main]
+                    ', stack=, !Ref 'AWS::StackId', '
+                    ', region=, !Ref 'AWS::Region', '
+                    ']]
+            c:\cfn\hooks.d\cfn-auto-reloader.conf:
+              content: !Join ['', ['[cfn-auto-reloader-hook]
+                    ', 'triggers=post.update
+                    ', 'path=Resources.WindowsServer.Metadata.AWS::CloudFormation::Init
+                    ', 'action=cfn-init.exe -v -s ', !Ref 'AWS::StackId', ' -r CbordWebServer',
+                                   ' --region ', !Ref 'AWS::Region', '
+                    ']]
+          services:
+            windows:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                - "c:\\cfn\\cfn-hup.conf"
+                - "c:\\cfn\\hooks.d\\cfn-auto-reloader.conf"
+      'AWS::CloudFormation::Designer':
+        id: 9eb37f23-09a6-4dd9-82b4-5fff77139981
+
+  CbordWebServerInstanceIamRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      - "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+      - "arn:aws:iam::aws:policy/AWSCodeCommitReadOnly"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+            - ssm.amazonaws.com
+          Action:
+          - 'sts:AssumeRole'
+      Policies:
+      - PolicyName: CbordSourceCodeRO
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 's3:Get*'
+            - 's3:List*'
+            Resource: !Join ["", ['arn:aws:s3:::', !FindInMap [!Ref Environment,SourceCodeBucket,Bucket],'*']]
+      - PolicyName: InternalPresentationParameterStoreAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'sts:AssumeRole'
+            Resource: "arn:aws:iam::295043313269:role/CrossAccountParameterStoreAccess"
+      - PolicyName: CBORDCodeCommitRO
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'sts:AssumeRole'
+            Resource: "arn:aws:iam::466343186120:role/CBORDCodeCommitRO"
+  CbordWebServerInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+      - !Ref CbordWebServerInstanceIamRole
+
+################################# SQL Server ###################################
+  CbordSqlServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !FindInMap [!Ref Environment,InstanceType,DBServer]
+      IamInstanceProfile: !Ref CbordSqlServerInstanceProfile
+      ImageId: !Ref SQLImageID
+      KeyName: !Ref KeyPairName
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: 'false'
+        DeviceIndex: '0'
+        GroupSet:
+        - !Ref CbordSQLServerSG
+        - !ImportValue Provider-SG-Services01
+        - !ImportValue Provider-SG-Services02
+        SubnetId: !FindInMap [!Ref Environment,Subnets,!Ref AvailabilityZone]
+      Monitoring: true
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sda1"
+        Ebs:
+          VolumeType: "gp2"
+          DeleteOnTermination: "true"
+          VolumeSize: "100"
+      - DeviceName: xvdb
+        Ebs:
+            Encrypted: 'true'
+            VolumeSize: '150'
+            DeleteOnTermination: 'true'
+            VolumeType: gp2
+      - DeviceName: xvdc
+        Ebs:
+            Encrypted: 'true'
+            VolumeSize: '100'
+            DeleteOnTermination: 'true'
+            VolumeType: gp2
+      - DeviceName: xvdd
+        Ebs:
+            Encrypted: 'true'
+            VolumeSize: '50'
+            DeleteOnTermination: 'true'
+            VolumeType: gp2
+      Tags:
+      - Key: Name
+        Value: !FindInMap [!Ref Environment,!Ref LHD,DBServer]
+      - Key: CbordVersion
+        Value: !Ref CbordVersion
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: LHD
+        Value: !Ref LHD
+      - Key: Owner/Contact
+        Value: '{{resolve:ssm:/CBORD/Owner:1}}'
+      - Key: Date
+        Value: !Ref 'CreationDate'
+      - Key: CostCode
+        Value: '{{resolve:ssm:/CBORD/CostCode:1}}'
+      - Key: Schedule
+        Value: !Ref Schedule
+      - Key: PatchBaseline
+        Value: scan
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+          $LocalAdmin = (Get-SSMParameterValue -Name "/Windows/LocalAdmin").Parameters.Value
+          $LocalAdminPassword = (Get-SSMParameterValue -Name "/Windows/LocalAdminPassword").Parameters.Value
+          net user $LocalAdmin $LocalAdminPassword /add /y
+          net localgroup administrators $LocalAdmin /add
+          #Tag Root Volume
+          $AWS_AVAIL_ZONE=(curl http://169.254.169.254/latest/meta-data/placement/availability-zone).Content
+          $AWS_REGION=$AWS_AVAIL_ZONE.Substring(0,$AWS_AVAIL_ZONE.length-1)
+          $AWS_INSTANCE_ID=(curl http://169.254.169.254/latest/meta-data/instance-id).Content
+          $ROOT_VOLUME_IDS=((Get-EC2Instance -Region $AWS_REGION -InstanceId $AWS_INSTANCE_ID).Instances.BlockDeviceMappings | where-object DeviceName -match '/dev/sda1').Ebs.VolumeId
+          $tag = New-Object Amazon.EC2.Model.Tag
+          $tag.key = "Name"
+          $tag.value = "DataBase-Root-Volume"
+          New-EC2Tag -Resource $ROOT_VOLUME_IDS -Region $AWS_REGION -Tag $tag
+          #Disable IPv6
+          netsh interface teredo set state disabled
+          netsh interface ipv6 6to4 set state state=disabled undoonstop=disabled
+          netsh interface ipv6 isatap set state state=disabled
+          cfn-init.exe -v -s ${AWS::StackId} -r CbordSqlServer --region ${AWS::Region}
+          </powershell>
+    DependsOn:
+    - CloudWatchLogGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT300M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        config:
+          commands:
+            00-set-time:
+              command: "tzutil /s \"AUS Eastern Standard Time\""
+              waitAfterCompletion: '0'
+            01-copy-utils:
+              command: !Join ['', ['powershell.exe -command Read-S3Object -BucketName ', !FindInMap [!Ref Environment,SourceCodeBucket,Bucket], ' -KeyPrefix utils -Folder C:\NSWH']]
+              waitAfterCompletion: '0'
+            02-Install-AWS-CLI:
+              command: !Join ['', ['powershell.exe -command C:\NSWH\awscli-v2\AWSCLIV2.msi /qn /norestart']]
+              waitAfterCompletion: '0'
+            03-Install-Python:
+              command: !Join ['', ['powershell.exe -command C:\NSWH\python3.8.2\python-3.8.2-amd64.exe /quiet InstallAllUsers=1 PrependPath=1 -Wait']]
+              waitAfterCompletion: '0'
+            04-Install-GIT:
+              command: !Join ['', ['powershell.exe -command C:\NSWH\git2.26.2\Git-2.26.2-64-bit.exe /silent']]
+              waitAfterCompletion: '0'
+            05-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            06-Clone-GIT-Repo:
+              command: !Join ['', ['powershell.exe -file C:\NSWH\Clone-CbordGitRepo.ps1']]
+              waitAfterCompletion: '0'
+            07-rename:
+              command: !Join ['', ["powershell.exe Rename-Computer -NewName ", !FindInMap [!Ref Environment,!Ref LHD,DBServer], " -Restart"]]
+              waitAfterCompletion: forever
+            08-join-domain:
+              command: !Join ['', ['powershell.exe Add-Computer -DomainName nswhealth.net -OUPath \"', !Ref DomainJoinOU,'\" -Credential (New-Object System.Management.Automation.PSCredential (\"', !Ref DomainJoinUser,'\",(ConvertTo-SecureString \"', !Ref DomainJoinPassword,'\" -AsPlainText -Force))) -Restart -Force']]
+              waitAfterCompletion: forever
+            09-eHealth-hive:
+              command: !Join ['', ['powershell.exe New-Item -Path HKLM:\System -Name eHealth']]
+              waitAfterCompletion: '0'
+            10-tattoo-CbordVersion:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name CbordVersion -Value ', !Ref CbordVersion, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            11-tattoo-LHDInstance:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name LHDInstance -Value ', !Ref LHD, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            12-tattoo-Environment:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name Environment -Value ', !Ref Environment, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            13-tattoo-BuildType:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name BuildType -Value ', !Ref BuildType, " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            14-tattoo-BackupBucket:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name BackupBucket -Value ', !FindInMap [!Ref Environment,!Ref LHD,BackupBucket], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            15-tattoo-WebServer-Name:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name WebServer -Value ', !FindInMap [!Ref Environment,!Ref LHD,WebServer], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            16-tattoo-DBServer-Name:
+              command: !Join ['', ['powershell.exe New-ItemProperty -Path HKLM:\System\eHealth -Name DBServer -Value ', !FindInMap [!Ref Environment,!Ref LHD,DBServer], " -PropertyType string -Force"]]
+              waitAfterCompletion: '0'
+            17-Install-CloudWatch-Agent:
+              command: !Join ['', ['powershell.exe -file C:\NSWH\nswh-cbord-source-code-repo\cloudwatch\CloudWatchInstall.ps1']]
+              waitAfterCompletion: '0'
+            18-install-NswhModule:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\webserver-scripts\Install-NSWHModule.ps1']]
+              waitAfterCompletion: '0'
+            19-create-storagedisks:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\dbserver-scripts\Create-DisksOnDBServer.ps1']]
+              waitAfterCompletion: '0'
+            20-copy-dbscripts:
+              command: !Join ['', ['powershell.exe -command Copy-Item -Recurse "C:\NSWH\nswh-cbord-source-code-repo\sql-scripts" -Destination "D:\Data\AfterDBServerInstallScripts" -Force']]
+              waitAfterCompletion: '0'
+            21-Customise-SQL:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\dbserver-scripts\CustomiseSQL.ps1']]
+              waitAfterCompletion: '0'
+            22-get-s3Backup:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\dbserver-scripts\Get-S3BackupForRestore.ps1']]
+              waitAfterCompletion: '0'
+            23-restore-s3Backup:
+              command: !Join ['', ['powershell.exe -file c:\nswh\nswh-cbord-source-code-repo\dbserver-scripts\Restore-CbordS3Backups.ps1']]
+              waitAfterCompletion: '0'
+            24-Config-Firewall-Log-Perms:
+              command: 'cacls c:\NSWH /t /e /g "NT SERVICE\MPSSVC":F'
+              waitAfterCompletion: '0'
+            25-Restart:
+              command: 'shutdown /r /f /t 30'
+              waitAfterCompletion: forever
+            26-Store-IP-in-SSM:
+              command: !Join ['', ['powershell.exe -file C:\NSWH\nswh-cbord-source-code-repo\route53\Store-IP-in-SSM.ps1']]
+              waitAftercompletion: '0'
+            27-signal-success:
+              command: !Join ['', ["cfn-signal.exe -e %ERRORLEVEL%  --stack ", !Ref 'AWS::StackName'," --resource CbordSqlServer --region ", !Ref 'AWS::Region']]
+
+          files:
+            c:\cfn\cfn-hup.conf:
+              content: !Join ['', ['[main]
+                    ', stack=, !Ref 'AWS::StackId', '
+                    ', region=, !Ref 'AWS::Region', '
+                    ']]
+            c:\cfn\hooks.d\cfn-auto-reloader.conf:
+              content: !Join ['', ['[cfn-auto-reloader-hook]
+                    ', 'triggers=post.update
+                    ', 'path=Resources.WindowsServer.Metadata.AWS::CloudFormation::Init
+                    ', 'action=cfn-init.exe -v -s ', !Ref 'AWS::StackId', ' -r CbordSqlServer',
+                                   ' --region ', !Ref 'AWS::Region', '
+                    ']]
+          services:
+            windows:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                - "c:\\cfn\\cfn-hup.conf"
+                - "c:\\cfn\\hooks.d\\cfn-auto-reloader.conf"
+      'AWS::CloudFormation::Designer':
+        id: 9eb37f23-09a6-4dd9-82b4-5fff77139981
+
+  CbordSqlServerInstanceIamRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      - "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+      - "arn:aws:iam::aws:policy/AWSCodeCommitReadOnly"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+            - ssm.amazonaws.com
+          Action:
+          - 'sts:AssumeRole'
+      Policies:
+      - PolicyName: CbordSourceCodeRO
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 's3:Get*'
+            - 's3:List*'
+            Resource: !Join ["", ['arn:aws:s3:::', !FindInMap [!Ref Environment,SourceCodeBucket,Bucket],'*']]
+      - PolicyName: CbordDBBackupsRW
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 's3:*Object'
+            - 's3:List*'
+            Resource: !Join ["", ['arn:aws:s3:::', !FindInMap [!Ref Environment,!Ref LHD,BackupBucket],'*']]
+      - PolicyName: CrossAccountBucketsRO
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 's3:Get*'
+            - 's3:List*'
+            Resource: !Join ["", ['arn:aws:s3:::', !FindInMap [!Ref Environment,CrossAccountBuckets,Buckets],'*']]
+      - PolicyName: InternalPresentationParameterStoreAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'sts:AssumeRole'
+            Resource: "arn:aws:iam::295043313269:role/CrossAccountParameterStoreAccess"
+      - PolicyName: CBORDCodeCommitRO
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - 'sts:AssumeRole'
+            Resource: "arn:aws:iam::466343186120:role/CBORDCodeCommitRO"
+  CbordSqlServerInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+      - !Ref CbordSqlServerInstanceIamRole
+
+################################################################################
+############################# Target Group #####################################
+  CBORDTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckProtocol: HTTP
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      HealthCheckTimeoutSeconds: 5
+      HealthCheckIntervalSeconds: 30
+      Matcher:
+        HttpCode: '200-499'
+      Name: !Join [ "-", [ !Ref LHD, !Ref Environment, TargetGroup ] ]
+      Port: 80
+      Protocol: HTTP
+      Targets:
+      - Id: !Ref CbordWebServer
+        Port: 80
+      VpcId: '{{resolve:ssm:/Provider/Account/SharedVPCId:2}}'
+      Tags:
+      - Key: Name
+        Value: !Join [ "-", [ !Ref LHD, !Ref Environment, TargetGroup ] ]
+      - Key: CbordVersion
+        Value: !Ref CbordVersion
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: LHD
+        Value: !Ref LHD
+      - Key: Owner/Contact
+        Value: '{{resolve:ssm:/CBORD/Owner:1}}'
+      - Key: Date
+        Value: !Ref 'CreationDate'
+      - Key: CostCode
+        Value: '{{resolve:ssm:/CBORD/CostCode:1}}'
+      TargetGroupAttributes:
+      - Key: stickiness.enabled
+        Value: true
+      - Key: stickiness.lb_cookie.duration_seconds
+        Value: '300'
+      - Key: load_balancing.algorithm.type
+        Value: least_outstanding_requests
+
+################################################################################
+############################# Listener Rule ####################################
+  CBORDListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref CBORDTargetGroup
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values:
+              - !FindInMap [!Ref Environment,!Ref LHD,WebsiteURL]
+      ListenerArn: !FindInMap [!Ref Environment,LoadBalancer,HTTPSListenerARN]
+      Priority: !FindInMap [!Ref Environment,!Ref LHD,ListenerPriority]
+################################################################################
+############################# Security Groups ##################################
+  CbordWebServerSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Web Server Security Group
+      VpcId: '{{resolve:ssm:/Provider/Account/SharedVPCId:2}}'
+      Tags:
+      - Key: Name
+        Value: !Join [ "-", [ !Ref LHD, !Ref Environment, WebServer ] ]
+      - Key: CbordVersion
+        Value: !Ref CbordVersion
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: LHD
+        Value: !Ref LHD
+      - Key: Owner/Contact
+        Value: '{{resolve:ssm:/CBORD/Owner:1}}'
+      - Key: Date
+        Value: !Ref 'CreationDate'
+      - Key: CostCode
+        Value: '{{resolve:ssm:/CBORD/CostCode:1}}'
+      SecurityGroupIngress:
+      -
+        IpProtocol: "tcp"
+        FromPort: "3389"
+        ToPort: "3389"
+        CidrIp: "10.0.0.0/8"
+        Description: "RDP from eHealth"
+      -
+        IpProtocol: "tcp"
+        FromPort: "80"
+        ToPort: "80"
+        CidrIp: "10.0.0.0/8"
+        Description: "HTTP from eHealth"
+      -
+        IpProtocol: "tcp"
+        FromPort: "30000"
+        ToPort: "30015"
+        CidrIp: "10.0.0.0/8"
+        Description: "HL7 from eHealth"
+      -
+        IpProtocol: "tcp"
+        FromPort: "1"
+        ToPort: "65535"
+        CidrIp: 10.134.65.0/24
+        Description: AWS AD Comms
+      -
+        IpProtocol: "udp"
+        FromPort: "1"
+        ToPort: "65535"
+        CidrIp: 10.134.65.0/24
+        Description: AWS AD Comms
+
+  CbordSQLServerSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: SQL Server Security Group
+      VpcId: '{{resolve:ssm:/Provider/Account/SharedVPCId:2}}'
+      Tags:
+      - Key: Name
+        Value: !Join [ "-", [ !Ref LHD, !Ref Environment, SQLServer ] ]
+      - Key: CbordVersion
+        Value: !Ref CbordVersion
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: LHD
+        Value: !Ref LHD
+      - Key: Owner/Contact
+        Value: '{{resolve:ssm:/CBORD/Owner:1}}'
+      - Key: Date
+        Value: !Ref 'CreationDate'
+      - Key: CostCode
+        Value: '{{resolve:ssm:/CBORD/CostCode:1}}'
+      SecurityGroupIngress:
+      -
+        IpProtocol: "tcp"
+        FromPort: "3389"
+        ToPort: "3389"
+        CidrIp: "10.0.0.0/8"
+        Description: "RDP from eHealth"
+      -
+        IpProtocol: "tcp"
+        FromPort: "1433"
+        ToPort: "1433"
+        CidrIp: "10.0.0.0/8"
+        Description: "SQL from eHealth"
+      -
+        IpProtocol: "tcp"
+        FromPort: "1"
+        ToPort: "65535"
+        CidrIp: 10.134.65.0/24
+        Description: AWS AD Comms
+      -
+        IpProtocol: "udp"
+        FromPort: "1"
+        ToPort: "65535"
+        CidrIp: 10.134.65.0/24
+        Description: AWS AD Comms
+
+################################################################################
+########################### CloudWatch #########################################
+  CloudWatchLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      RetentionInDays: '7'
+################################################################################
+########################### CPU Credit Alarms ##################################
+  CbordWebServerCPUCreditAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName:  !Join [ "-", [ !Ref LHD, CbordWebServer-Low-CPU-Credits ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordWebServer'
+      EvaluationPeriods: 1
+      MetricName: CPUCreditBalance
+      Namespace: 'AWS/EC2'
+      Period: 300
+      Statistic: Average
+      Threshold: 50
+
+  CbordSqlServerCPUCreditAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName:  !Join [ "-", [ !Ref LHD, CbordSqlServer-Low-CPU-Credits ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+      EvaluationPeriods: 1
+      MetricName: CPUCreditBalance
+      Namespace: 'AWS/EC2'
+      Period: 300
+      Statistic: Average
+      Threshold: 100
+
+################################################################################
+########################### Server Recovery Alarms #############################
+  CbordWebServerRecoveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordWebServer-Recovery ] ]
+      AlarmDescription: Trigger a recovery when instance status check fails for 5 consecutive minutes.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Statistic: Minimum
+      Period: '60'
+      EvaluationPeriods: '5'
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: '0'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      - !Sub 'arn:aws:automate:${AWS::Region}:ec2:recover'
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordWebServer'
+
+  CbordSqlServerRecoveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-Recovery ] ]
+      AlarmDescription: Trigger a recovery when instance status check fails for 5 consecutive minutes.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Statistic: Minimum
+      Period: '60'
+      EvaluationPeriods: '5'
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: '0'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      - !Sub 'arn:aws:automate:${AWS::Region}:ec2:recover'
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+
+################################################################################
+########################### High CPU Alarms ####################################
+  CbordWebServerCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordWebServer-High-CPU ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '15'
+      Threshold: '90'
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordWebServer'
+
+  CbordSqlServerCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-High-CPU ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '15'
+      Threshold: '90'
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+
+################################################################################
+########################### Low Disk Alarms ####################################
+  CbordWebServerDiskSpaceAlarmC:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordWebServer-Low-DiskSpace-Boot-Volume ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordWebServer'
+      - Name: instance
+        Value: "C:"
+      - Name: objectname
+        Value: LogicalDisk
+      - Name: ImageId
+        Value: !Ref WebImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,WebServer]
+      EvaluationPeriods: 1
+      MetricName: "LogicalDisk % Free Space"
+      Namespace: 'CWAgent'
+      Period: 300
+      Statistic: Average
+      Threshold: 10
+
+  CbordSqlServerDiskSpaceAlarmC:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-Low-DiskSpace-Boot-Volume ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+      - Name: instance
+        Value: "C:"
+      - Name: objectname
+        Value: LogicalDisk
+      - Name: ImageId
+        Value: !Ref SQLImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,DBServer]
+      EvaluationPeriods: 1
+      MetricName: "LogicalDisk % Free Space"
+      Namespace: 'CWAgent'
+      Period: 300
+      Statistic: Average
+      Threshold: 10
+
+  CbordSqlServerDiskSpaceAlarmD:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-Low-DiskSpace-Database-Volume ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+      - Name: instance
+        Value: "D:"
+      - Name: objectname
+        Value: LogicalDisk
+      - Name: ImageId
+        Value: !Ref SQLImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,DBServer]
+      EvaluationPeriods: 1
+      MetricName: "LogicalDisk % Free Space"
+      Namespace: 'CWAgent'
+      Period: 300
+      Statistic: Average
+      Threshold: 10
+
+  CbordSqlServerDiskSpaceAlarmE:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-Low-DiskSpace-Database-Logs-Volume ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+      - Name: instance
+        Value: "E:"
+      - Name: objectname
+        Value: LogicalDisk
+      - Name: ImageId
+        Value: !Ref SQLImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,DBServer]
+      EvaluationPeriods: 1
+      MetricName: "LogicalDisk % Free Space"
+      Namespace: 'CWAgent'
+      Period: 300
+      Statistic: Average
+      Threshold: 10
+
+  CbordSqlServerDiskSpaceAlarmZ:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-Low-DiskSpace-Database-Backup-Volume ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+      - Name: instance
+        Value: "Z:"
+      - Name: objectname
+        Value: LogicalDisk
+      - Name: ImageId
+        Value: !Ref SQLImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,DBServer]
+      EvaluationPeriods: 1
+      MetricName: "LogicalDisk % Free Space"
+      Namespace: 'CWAgent'
+      Period: 300
+      Statistic: Average
+      Threshold: 10
+
+################################################################################
+########################### Low Memory Alarms ##################################
+  CbordWebServerLowMemory:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordWebServer-Low-Memory ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordWebServer'
+      - Name: objectname
+        Value: "Memory"
+      - Name: ImageId
+        Value: !Ref WebImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,WebServer]
+      EvaluationPeriods: 15
+      MetricName: "Memory Available Bytes"
+      Namespace: 'CWAgent'
+      Period: 60
+      Statistic: Average
+      Threshold: 2000000000
+
+  CbordSqlServerLowMemory:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CbordSqlServer-Low-Memory ] ]
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref 'CbordSqlServer'
+      - Name: objectname
+        Value: "Memory"
+      - Name: ImageId
+        Value: !Ref SQLImageID
+      - Name: InstanceType
+        Value: !FindInMap [!Ref Environment,InstanceType,DBServer]
+      EvaluationPeriods: 15
+      MetricName: "Memory Available Bytes"
+      Namespace: 'CWAgent'
+      Period: 60
+      Statistic: Average
+      Threshold: 1000000000
+
+  ################################################################################
+  ########################### SQL Log Alarms #####################################
+  SQLServerServiceLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: SQL Server stopped
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, SQLServer-Service-Stopped ] ]
+  SQLServerServiceLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, SQLServer-Service-Stopped ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, SQLServer-Service-Stopped ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, SQLServer-Service-Stopped ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  SQLServerAgentServiceLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: SQL Server Agent stopped
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, SQLServerAgent-Service-Stopped ] ]
+  SQLServerAgentServiceLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, SQLServerAgent-Service-Stopped ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, SQLServerAgent-Service-Stopped ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, SQLServerAgent-Service-Stopped ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  BackupFailedToUploadToS3LogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: Backup Upload to S3 Failed
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, BackupFailedToUploadToS3 ] ]
+  BackupFailedToUploadToS3LogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, BackupFailedToUploadToS3 ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, BackupFailedToUploadToS3 ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, BackupFailedToUploadToS3 ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  BackupFailedLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: BACKUP failed
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, Backup-Failed ] ]
+  BackupFailedLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, Backup-Failed ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, Backup-Failed ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, Backup-Failed ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  ################################################################################
+  ########################### IIS Log Alarms #####################################
+  WorldWideWebServiceLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: World Wide Web stopped
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, WorldWideWeb-Service-Stopped ] ]
+  WorldWideWebServiceLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, WorldWideWeb-Service-Stopped ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, WorldWideWeb-Service-Stopped ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, WorldWideWeb-Service-Stopped ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  ################################################################################
+  ########################### CBORD Service Alarms ###############################
+  CBORDDataServiceFailedToStartLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: CBORD.NetMenu.Framework.Utility.CBORDException Startup failed
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, CBORD-Data-Service-Failed-to-Start ] ]
+  CBORDDataServiceFailedToStartLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, CBORD-Data-Service-Failed-to-Start ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, CBORD-Data-Service-Failed-to-Start ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, CBORD-Data-Service-Failed-to-Start ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  FSIInterfaceStartingLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: Starting service CBORD FSI Interface
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, FSI-Interface-Starting ] ]
+  FSIInterfaceStartingLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, FSI-Interface-Starting ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, FSI-Interface-Starting ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, FSI-Interface-Starting ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  FSIInterfaceFailToStartLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: CBORD FSI Interface Unable to start
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, FSI-Interface-Failed-To-Start ] ]
+  FSIInterfaceFailToStartLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, FSI-Interface-Failed-To-Start ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, FSI-Interface-Failed-To-Start ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, FSI-Interface-Failed-To-Start ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  FSIInterfaceStoppedLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: Stopping service CBORD FSI Interface
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, FSI-Interface-Stopped ] ]
+  FSIInterfaceStoppedLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, FSI-Interface-Stopped ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, FSI-Interface-Stopped ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, FSI-Interface-Stopped ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  NSIInterfaceStartingLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: Starting service CBORD NSI Service
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, NSI-Interface-Starting ] ]
+  NSIInterfaceStartingLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, NSI-Interface-Starting ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, NSI-Interface-Starting ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, NSI-Interface-Starting ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  NSIInterfaceFailedToStartLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: CBORD NSI Service Unable to start
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, NSI-Interface-Failed-To-Start ] ]
+  NSIInterfaceFailedToStartLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, NSI-Interface-Failed-To-Start ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, NSI-Interface-Failed-To-Start ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, NSI-Interface-Failed-To-Start ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  NSIInterfaceStoppedLogMetric:
+    Type: 'AWS::Logs::MetricFilter'
+    DependsOn: CloudWatchLogGroup
+    Properties:
+      FilterPattern: Stopping service CBORD NSI Service
+      LogGroupName: !Join [ "-", [ !Ref LHD, !Ref Environment ] ]
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: LogMetrics
+        MetricName: !Join [ "-", [ !Ref LHD, NSI-Interface-Stopped ] ]
+  NSIInterfaceStoppedLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Join [ "-", [ !Ref LHD, NSI-Interface-Stopped ] ]
+      AlarmDescription: !Join [ "-", [ !Ref LHD, NSI-Interface-Stopped ] ]
+      MetricName: !Join [ "-", [ !Ref LHD, NSI-Interface-Stopped ] ]
+      Namespace: LogMetrics
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      AlarmActions:
+      - !If [EnableAlertsIsTrue, !ImportValue "EmailAlertList", !Ref "AWS::NoValue"]
+      - !If [EnableAlertsIsTrue, !ImportValue "SMSAlertList", !Ref "AWS::NoValue"]
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+
+###################################################################################
+#################################### OutPuts ######################################
+Outputs:
+  DBPrivateIp:
+    Description: DB Server IP
+    Value: !GetAtt CbordSqlServer.PrivateIp
+    Export:
+      Name: !Join [ "-", [ !Ref LHD, !Ref Environment, DBIP ] ]
+
+  DBDNSName:
+    Description: DB Server DNS Name
+    Value: !Join [ "", [ !Ref LHD, cbdb.citc.health.nsw.gov.au ] ]
+    Export:
+      Name: !Join [ "-", [ !Ref LHD, !Ref Environment, DBDNS ] ]
+
+  WebPrivateIp:
+    Description: Web Server IP
+    Value: !GetAtt CbordWebServer.PrivateIp
+    Export:
+      Name: !Join [ "-", [ !Ref LHD, !Ref Environment, WebIP ] ]
